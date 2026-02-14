@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FreeSolRentClaimer | Live</title>
+    <script type="module">
+        import { 
+            Connection, 
+            PublicKey, 
+            Transaction, 
+            SystemProgram, 
+            LAMPORTS_PER_SOL 
+        } from 'https://esm.sh/@solana/web3.js';
+        import { 
+            createCloseAccountInstruction, 
+            TOKEN_PROGRAM_ID 
+        } from 'https://esm.sh/@solana/spl-token';
+
+        window.solanaWeb3 = { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL };
+        window.splToken = { createCloseAccountInstruction, TOKEN_PROGRAM_ID };
+    </script>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: radial-gradient(circle at top, #1f2933 0, #050608 55%, #000 100%);
+            color: #e5e7eb;
+            min-height: 100vh;
+        }
+        header {
+            background: rgba(10, 10, 10, 0.9);
+            border-bottom: 1px solid #111827;
+            padding: 18px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            backdrop-filter: blur(10px);
+        }
+        .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; }
+        .logo-badge {
+            width: 28px; height: 28px; border-radius: 999px;
+            background: linear-gradient(135deg, #22c55e, #22d3ee);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 16px; color: #020617; font-weight: 900;
+        }
+        .tagline { font-size: 12px; color: #9ca3af; }
+        .btn {
+            padding: 10px 18px; border-radius: 999px; border: none;
+            cursor: pointer; font-size: 14px; font-weight: 500;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #22c55e, #22d3ee);
+            color: #020617; box-shadow: 0 0 18px rgba(34, 197, 94, 0.3);
+        }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-secondary { background: #111827; color: #e5e7eb; border: 1px solid #374151; }
+        
+        main { max-width: 1000px; margin: 40px auto; padding: 0 16px; }
+        .hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 28px; }
+        @media (max-width: 800px) { .hero { grid-template-columns: 1fr; } }
+        
+        .panel {
+            background: rgba(15, 23, 42, 0.95); border-radius: 14px;
+            border: 1px solid #1f2937; padding: 20px;
+        }
+        .panel-row { display: flex; justify-content: space-between; margin: 10px 0; font-size: 14px; }
+        .status-box {
+            margin-top: 15px; background: #000; border-radius: 8px;
+            padding: 12px; font-family: monospace; font-size: 11px;
+            height: 150px; overflow-y: auto; color: #22c55e; border: 1px solid #111827;
+        }
+        .hero-highlight { background: linear-gradient(135deg, #22c55e, #22d3ee); -webkit-background-clip: text; color: transparent; font-weight: 800; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="logo">
+        <div class="logo-badge">F</div>
+        <div>FreeSolRentClaimer <div class="tagline">90/10 Rent Recovery</div></div>
+    </div>
+    <button id="connectBtn" class="btn btn-secondary">Connect Wallet</button>
+</header>
+
+<main>
+    <section class="hero">
+        <div>
+            <h1 style="font-size: 42px;">Reclaim your <span class="hero-highlight">Locked SOL</span></h1>
+            <p style="color: #9ca3af; line-height: 1.6;">
+                Every token account you ever opened (for airdrops or trading) costs ~0.002 SOL in rent. 
+                If the account is empty, we close it and send the SOL back to you.
+            </p>
+            <div style="margin-top: 30px;">
+                <button id="scanBtn" class="btn btn-primary" style="padding: 15px 30px;" disabled>1. Scan Wallet</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3 style="margin-top:0">Recovery Summary</h3>
+            <div class="panel-row"><span>Empty Accounts:</span> <span id="accCount">0</span></div>
+            <div class="panel-row"><span>Total Rent:</span> <span id="totalSol">0.00 SOL</span></div>
+            <hr style="border: 0; border-top: 1px dashed #374151;">
+            <div class="panel-row" style="color: #22c55e; font-weight: bold;">
+                <span>You Get (90%):</span> <span id="userSol">0.00 SOL</span>
+            </div>
+            <div class="panel-row" style="color: #9ca3af; font-size: 12px;">
+                <span>Fee (10%):</span> <span id="feeSol">0.00 SOL</span>
+            </div>
+            
+            <button id="reclaimBtn" class="btn btn-primary" style="width: 100%; margin-top: 20px;" disabled>2. Reclaim SOL</button>
+            <div class="status-box" id="log">Waiting for wallet connection...</div>
+        </div>
+    </section>
+</main>
+
+<script type="module">
+    const FEE_DESTINATION = "BDGSsHGcmcAiZhAQ29PG3Rc1gaqrjHatE1qASFu6NXTJ";
+    const RPC_ENDPOINT = "https://api.mainnet-beta.solana.com";
+    
+    let wallet = null;
+    let accountsToClose = [];
+    let connection = null;
+
+    const logEl = document.getElementById('log');
+    const connectBtn = document.getElementById('connectBtn');
+    const scanBtn = document.getElementById('scanBtn');
+    const reclaimBtn = document.getElementById('reclaimBtn');
+
+    function log(msg) {
+        const time = new Date().toLocaleTimeString();
+        logEl.innerHTML += `<div>[${time}] ${msg}</div>`;
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Connect Wallet
+    connectBtn.onclick = async () => {
+        if (!window.solana) return alert("Please install Phantom or a Solana wallet.");
+        try {
+            const resp = await window.solana.connect();
+            wallet = resp.publicKey;
+            connectBtn.innerText = wallet.toString().slice(0, 6) + "...";
+            scanBtn.disabled = false;
+            log("Wallet connected: " + wallet.toString());
+            connection = new window.solanaWeb3.Connection(RPC_ENDPOINT);
+        } catch (err) {
+            log("Connection failed: " + err.message);
+        }
+    };
+
+    // Scan for Empty Accounts
+    scanBtn.onclick = async () => {
+        log("Scanning for empty token accounts...");
+        scanBtn.disabled = true;
+        accountsToClose = [];
+
+        try {
+            const tokenAccounts = await connection.getParsedTokenAccountsByOwner(wallet, {
+                programId: window.splToken.TOKEN_PROGRAM_ID
+            });
+
+            tokenAccounts.value.forEach(acc => {
+                const amount = acc.account.data.parsed.info.tokenAmount.uiAmount;
+                if (amount === 0) {
+                    accountsToClose.push({
+                        pubkey: acc.pubkey,
+                        rent: 0.00203928 // Standard rent for SPL token account
+                    });
+                }
+            });
+
+            const total = accountsToClose.length * 0.00203928;
+            document.getElementById('accCount').innerText = accountsToClose.length;
+            document.getElementById('totalSol').innerText = total.toFixed(4) + " SOL";
+            document.getElementById('userSol').innerText = (total * 0.9).toFixed(4) + " SOL";
+            document.getElementById('feeSol').innerText = (total * 0.1).toFixed(4) + " SOL";
+
+            log(`Found ${accountsToClose.length} empty accounts.`);
+            if (accountsToClose.length > 0) reclaimBtn.disabled = false;
+        } catch (err) {
+            log("Scan error: " + err.message);
+        }
+        scanBtn.disabled = false;
+    };
+
+    // Reclaim Logic
+    reclaimBtn.onclick = async () => {
+        log("Building transaction...");
+        reclaimBtn.disabled = true;
+
+        try {
+            const { Transaction, PublicKey, SystemProgram, LAMPORTS_PER_SOL } = window.solanaWeb3;
+            const transaction = new Transaction();
+            
+            // 1. Add Close Instructions (Limit to 10 per tx to be safe with size)
+            const batch = accountsToClose.slice(0, 10);
+            batch.forEach(acc => {
+                transaction.add(
+                    window.splToken.createCloseAccountInstruction(
+                        acc.pubkey,
+                        wallet,
+                        wallet
+                    )
+                );
+            });
+
+            // 2. Add Fee Split Instruction
+            // Calculate 10% of the total reclaimed in this batch
+            const totalBatchRent = batch.length * 2039280; // in lamports
+            const feeAmount = Math.floor(totalBatchRent * 0.1);
+
+            transaction.add(
+                SystemProgram.transfer({
+                    fromPubkey: wallet,
+                    toPubkey: new PublicKey(FEE_DESTINATION),
+                    lamports: feeAmount,
+                })
+            );
+
+            transaction.feePayer = wallet;
+            const { blockhash } = await connection.getLatestBlockhash();
+            transaction.recentBlockhash = blockhash;
+
+            log("Awaiting signature...");
+            const signed = await window.solana.signTransaction(transaction);
+            const signature = await connection.sendRawTransaction(signed.serialize());
+            
+            log("Transaction sent! Signature: " + signature.slice(0, 12) + "...");
+            log("Waiting for confirmation...");
+            
+            await connection.confirmTransaction(signature);
+            log("Success! Rent reclaimed.");
+            
+        } catch (err) {
+            log("Transaction failed: " + err.message);
+        }
+        reclaimBtn.disabled = false;
+    };
+</script>
+
+</body>
+</html>
