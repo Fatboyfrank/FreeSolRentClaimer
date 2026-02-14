@@ -1,0 +1,130 @@
+<script type="module">
+    const FEE_DESTINATION = "BDGSsHGcmcAiZhAQ29PG3Rc1gaqrjHatE1qASFu6NXTJ";
+    
+    // Updated to the most stable 2026 public browser-friendly endpoints
+    const RPC_ENDPOINTS = [
+        "https://api.mainnet-beta.solana.com/", // With trailing slash for CORS stability
+        "https://solana-mainnet.rpc.extrnode.com"
+    ];
+    
+    let wallet = null;
+    let accountsToClose = [];
+    let currentRpcIndex = 0;
+    
+    // Function to create connection with error handling
+    const createConnection = (url) => new window.solanaWeb3.Connection(url, {
+        commitment: 'confirmed',
+        disableRetryOnRateLimit: false
+    });
+
+    let connection = createConnection(RPC_ENDPOINTS[0]);
+
+    const logEl = document.getElementById('log');
+    const connectBtn = document.getElementById('connectBtn');
+    const scanBtn = document.getElementById('scanBtn');
+    const reclaimBtn = document.getElementById('reclaimBtn');
+
+    function log(msg, isError = false) {
+        const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const color = isError ? "#ef4444" : "#22d3ee";
+        logEl.innerHTML += `<div style="color: ${color}">[${time}] ${msg}</div>`;
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    connectBtn.onclick = async () => {
+        const provider = window.solana || window.phantom?.solana;
+        if (!provider) return alert("Please install Phantom.");
+        try {
+            const resp = await provider.connect();
+            wallet = resp.publicKey;
+            connectBtn.innerText = wallet.toString().slice(0, 4) + "..." + wallet.toString().slice(-4);
+            scanBtn.disabled = false;
+            log("Wallet: " + wallet.toString());
+        } catch (err) { log("Connection Error: " + err.message, true); }
+    };
+
+    scanBtn.onclick = async () => {
+        log("Scanning Solana network...");
+        scanBtn.disabled = true;
+        accountsToClose = [];
+
+        try {
+            // Fetching token accounts using standard SPL Program ID
+            const tokenAccounts = await connection.getParsedTokenAccountsByOwner(wallet, {
+                programId: window.splToken.TOKEN_PROGRAM_ID
+            });
+
+            tokenAccounts.value.forEach(acc => {
+                const info = acc.account.data.parsed.info;
+                if (info.tokenAmount.uiAmount === 0) {
+                    accountsToClose.push({ pubkey: acc.pubkey });
+                }
+            });
+
+            const total = accountsToClose.length * 0.002039;
+            document.getElementById('accCount').innerText = accountsToClose.length;
+            document.getElementById('totalSol').innerText = total.toFixed(4) + " SOL";
+            document.getElementById('userSol').innerText = (total * 0.9).toFixed(4) + " SOL";
+
+            log(`Success! Found ${accountsToClose.length} empty accounts.`);
+            if (accountsToClose.length > 0) reclaimBtn.disabled = false;
+            
+        } catch (err) {
+            log(`RPC Error: ${err.message}`, true);
+            if (currentRpcIndex < RPC_ENDPOINTS.length - 1) {
+                currentRpcIndex++;
+                log(`Switching to Backup RPC: ${RPC_ENDPOINTS[currentRpcIndex]}...`);
+                connection = createConnection(RPC_ENDPOINTS[currentRpcIndex]);
+                scanBtn.disabled = false;
+            } else {
+                log("All public RPCs are congested. Try again in 2 minutes or use a VPN set to USA/Japan.", true);
+            }
+        }
+        scanBtn.disabled = false;
+    };
+
+    reclaimBtn.onclick = async () => {
+        log("Sending batch transaction...");
+        reclaimBtn.disabled = true;
+
+        try {
+            const { Transaction, PublicKey, SystemProgram } = window.solanaWeb3;
+            const transaction = new Transaction();
+            const batch = accountsToClose.slice(0, 15); // Increased batch size for efficiency
+            
+            batch.forEach(acc => {
+                transaction.add(
+                    window.splToken.createCloseAccountInstruction(acc.pubkey, wallet, wallet)
+                );
+            });
+
+            const feeAmount = Math.floor((batch.length * 2039280) * 0.1);
+            transaction.add(
+                SystemProgram.transfer({
+                    fromPubkey: wallet,
+                    toPubkey: new PublicKey(FEE_DESTINATION),
+                    lamports: feeAmount,
+                })
+            );
+
+            const { blockhash } = await connection.getLatestBlockhash();
+            transaction.recentBlockhash = blockhash;
+            transaction.feePayer = wallet;
+
+            const provider = window.solana || window.phantom?.solana;
+            const signed = await provider.signTransaction(transaction);
+            const signature = await connection.sendRawTransaction(signed.serialize());
+            
+            log("Transaction Sent! Confirmed shortly.");
+            await connection.confirmTransaction(signature);
+            log("SOL RECLAIMED SUCCESSFULLY!");
+            
+            // Refresh counts
+            scanBtn.click(); 
+
+        } catch (err) {
+            log("Tx Error: " + err.message, true);
+        }
+        reclaimBtn.disabled = false;
+    };
+</script>
